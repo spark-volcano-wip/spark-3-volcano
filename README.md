@@ -1,7 +1,25 @@
-# Volcano project
+# Volcano Project
 
-This repository develops on top of the original Spark project to enable Spark to use [Volcano](https://volcano.sh/en/docs/schduler_introduction/) as it's resource manager when running on Kubernetes.
+# How it Works
 
+This repository started with the 3.1.2 tag of https://github.com/apache/spark/tree/master/resource-managers/kubernetes. The goal is to use [Volcano](https://volcano.sh/en/docs/schduler_introduction/) as a resource manager when running spark on Kubernetes.
+
+At a high level the changes are
+
+* We have generated Fluent Builders à la Fabric8 Kuberenetes Client for Volcano CRD types such as Queues, Jobs, Tasks etc. These are at the moment in the companion jar file in the ``jars`` directory. We have an outstanding work item to open source this code as an extension for the Fabric8 Kuberenetes Client.
+
+* In driver mode, if the config option ``spark.kubernetes.volcano.enabled`` is set to ``true`` we create a volcano Job for the driver. This job contains only one task, with the pod specification for the driver. This job is submitted to the volcano queue specified by ``spark.kubernetes.volcano.queue`` and scheduler `` ``spark.kubernetes.volcano.scheduler``
+
+* We have a ``LoggingJobWatcher`` that then watches the status / phase changes of the Job. When the job is in either completed, aborted or terminated state, the watcher completes and the driver JVM exits.
+* The driver process also checks if ``spark.kubernetes.volcano.enabled`` is set to ``true``. If so, it creates another Volcano Job with a single task to run the executors. The number of replicas for the executor is initially set to 0. Once the executor job starts running, we update it to the number of executor instances required by ``ExecutorAllocationManager``.
+* For spark-kubernetes, The executor ids are assigned from a ``AtomicLong`` counter as environment variable ``SPARK_EXECUTOR_ID``. We found it difficult to change this on the fly. So instead, we extract this from the pod name, which is always <executor-job-name>-<task-name>-<replica index>.   
+* In client mode, the driver runs in-process, so there is no driver job. The handling of the executors is the same as described above. 
+  
+The above approach seems to work in the minimal case of one user and one queue running the spark examples. We still need to validate the approach for multi-user, multi-queue scenario where pre-emption and reclaim are required.
+  
+Support for dynamic allocation using the ``spark.dynamicAllocation.shuffleTracking.enabled`` config option is in progress. 
+    
+This repository develops on top of the original Spark project to enable Spark 
 ## Setup Local Development Environment
 
 ### 1. Setup IntelliJ and Minikube
