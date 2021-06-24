@@ -1,0 +1,95 @@
+Name:       	spark-c49f5578ee3d6ad4
+Namespace:  	default
+Labels:     	<none>
+Annotations:	<none>
+API Version:	
+Kind:       	
+Metadata:
+  Creation Timestamp:	2021-04-20 09:45:06 +0200 CEST
+  Generate Name:     	
+  Generation:        	1
+  Resource Version:  	1245
+  Self Link:         	/apis/batch.volcano.sh/v1alpha1/namespaces/default/jobs/spark-c49f5578ee3d6ad4
+  UID:               	fc46035c-5471-4c16-a5fa-4269f0aac0ce
+Spec:
+  Min Available:     	1
+  Plugins:
+    Env:	[]
+    Ssh:	[]
+  Scheduler Name:    	volcano
+  Tasks:
+    Name:	driver
+    Replicas:	1
+    Template:
+      Metadata:
+        Annotations:
+          Cri . Cci . Io / Container - Type:          	
+          Kubernetes . Io / Availablezone:            	
+          Network . Alpha . Kubernetes . Io / Network:	
+        Creation Timestamp:	0001-01-01 00:00:00 +0000 UTC
+      Spec:
+        Containers:
+          Command:
+          Image:	spark:bare
+          Name: 	spark-kubernetes-driver
+          Ports:
+            Container Port:	7078
+            Name:          	driver-rpc-port
+            Container Port:	7079
+            Name:          	blockmanager
+            Container Port:	4040
+            Name:          	spark-ui
+          Resources:
+            Limits:
+              Cpu:   	0
+              Memory:	1408Mi
+            Requests:
+              Cpu:   	1
+              Memory:	1408Mi
+            Working Dir:	
+        Image Pull Secrets:
+        Restart Policy:   	Never
+  Name: executor
+    Replicas: 3
+    Template:
+      Metadata:
+        Annotations:
+          Cri . Cci . Io / Container - Type:
+          Kubernetes . Io / Availablezone:
+          Network . Alpha . Kubernetes . Io / Network:
+        Creation Timestamp: 0001-01-01 00:00:00 +0000 UTC
+      Spec:
+        Containers:
+          Command:
+          Image: spark:bare
+          Name: spark-kubernetes-driver
+          Ports:
+            Container Port: 7078
+            Name: driver-rpc-port
+            Container Port: 7079
+            Name: blockmanager
+            Container Port: 4040
+            Name: spark-ui
+          Resources:
+            Limits:
+              Cpu: 0
+              Memory: 1408Mi
+            Requests:
+              Cpu: 1
+              Memory: 1408Mi
+            Working Dir:
+        Image Pull Secrets:
+        Restart Policy: Never
+
+
+Status:
+  Failed:       	1
+  Min Available:	1
+  Version:      	1
+  State:
+    Phase:	Failed
+Events:
+Type           	Reason                                  	Age                           	Form                                    	Message
+-------        	-------                                 	-------                       	-------                                 	-------
+Warning        	Unschedulable                           	2m35s (x2 over 2m36s)         	volcano                                 	0/0 tasks in gang unschedulable: pod group is not ready, 1 minAvailable.
+Normal         	Scheduled                               	2m27s (x8 over 2m34s)         	volcano                                 	pod group is ready

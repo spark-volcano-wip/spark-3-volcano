@@ -1,0 +1,84 @@
+Name:         spark-c49f5578ee3d6ad4-driver-0
+Namespace:    default
+Priority:     0
+Node:         docker-desktop/192.168.65.4
+Start Time:   Tue, 20 Apr 2021 09:45:08 +0200
+Labels:       spark-app-selector=spark-d1462766d99646c4b86633e78b224c26
+              spark-role=driver
+              volcano.sh/job-name=spark-c49f5578ee3d6ad4
+              volcano.sh/job-namespace=default
+Annotations:  scheduling.k8s.io/group-name: spark-c49f5578ee3d6ad4
+              volcano.sh/job-name: spark-c49f5578ee3d6ad4
+              volcano.sh/job-version: 0
+              volcano.sh/task-spec: driver
+Status:       Failed
+IP:           10.1.0.10
+IPs:
+  IP:           10.1.0.10
+Controlled By:  Job/spark-c49f5578ee3d6ad4
+Containers:
+  spark-kubernetes-driver:
+    Container ID:  docker://e3e69ed357cafd7eab9ca64fb4294b4383fcae45bbc4f283a80d021ffe025d6d
+    Image:         spark:bare
+    Image ID:      docker://sha256:bf9b58ff226a3f712b9cc99e5a5cabc92f0a2d791f3b5372a897a9a13da4a0e6
+    Ports:         7078/TCP, 7079/TCP, 4040/TCP
+    Host Ports:    0/TCP, 0/TCP, 0/TCP
+    Args:
+      driver
+      --properties-file
+      /opt/spark/conf/spark.properties
+      --class
+      org.apache.spark.examples.SparkPi
+      local:///examples/target/scala-2.12/jars/spark-examples_2.12-3.1.1.jar
+    State:          Terminated
+      Reason:       Error
+      Exit Code:    101
+      Started:      Tue, 20 Apr 2021 09:45:13 +0200
+      Finished:     Tue, 20 Apr 2021 09:45:16 +0200
+    Ready:          False
+    Restart Count:  0
+    Limits:
+      memory:  1408Mi
+    Requests:
+      cpu:     1
+      memory:  1408Mi
+    Environment:
+      SPARK_USER:                 tincoboekestijn
+      SPARK_APPLICATION_ID:       spark-d1462766d99646c4b86633e78b224c26
+      SPARK_DRIVER_BIND_ADDRESS:   (v1:status.podIP)
+      SPARK_LOCAL_DIRS:           /var/data/spark-64a86ee6-3768-4ea9-8ece-fd774cddd01e
+      SPARK_CONF_DIR:             /opt/spark/conf
+    Mounts:
+      /opt/spark/conf from spark-conf-volume-driver (rw)
+      /var/data/spark-64a86ee6-3768-4ea9-8ece-fd774cddd01e from spark-local-dir-1 (rw)
+      /var/run/secrets/kubernetes.io/serviceaccount from default-token-x96x4 (ro)
+Conditions:
+  Type              Status
+  Initialized       True 
+  Ready             False 
+  ContainersReady   False 
+  PodScheduled      True 
+Volumes:
+  spark-local-dir-1:
+    Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    Medium:     
+    SizeLimit:  <unset>
+  spark-conf-volume-driver:
+    Type:      ConfigMap (a volume populated by a ConfigMap)
+    Name:      spark-drv-ba1d2b78ee3d6ad4-conf-map
+    Optional:  false
+  default-token-x96x4:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  default-token-x96x4
+    Optional:    false
+QoS Class:       Burstable
+Node-Selectors:  <none>
+Tolerations:     node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                 node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type    Reason     Age   From     Message
+  ----    ------     ----  ----     -------
+  Normal  Scheduled  97s   volcano  Successfully assigned default/spark-c49f5578ee3d6ad4-driver-0 to docker-desktop
+  Normal  Pulled     92s   kubelet  Container image "spark:bare" already present on machine
+  Normal  Created    92s   kubelet  Created container spark-kubernetes-driver
+  Normal  Started    92s   kubelet  Started container spark-kubernetes-driver
