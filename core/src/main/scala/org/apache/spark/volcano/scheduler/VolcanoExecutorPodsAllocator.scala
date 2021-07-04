@@ -19,28 +19,30 @@ package org.apache.spark.volcano.scheduler
 import io.fabric8.kubernetes.api.model.PodBuilder
 import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import io.fabric8.kubernetes.client.KubernetesClient
+import org.apache.spark.deploy.k8s.Config.KUBERNETES_VOLCANO_ADD_EXECUTOR_OWNER_REFERENCE
 import org.apache.spark.deploy.k8s.Constants._
 import org.apache.spark.deploy.k8s.KubernetesConf
+import org.apache.spark.deploy.k8s.submit.KubernetesClientUtils
 import org.apache.spark.resource.ResourceProfile
-import org.apache.spark.resource.ResourceProfile.DEFAULT_RESOURCE_PROFILE_ID
 import org.apache.spark.scheduler.cluster.k8s._
 import org.apache.spark.util.{Clock, Utils}
 import org.apache.spark.volcano.VolcanoOperator
 import org.apache.spark.{SecurityManager, SparkConf}
 
-import java.util.concurrent.atomic.AtomicLong
 import scala.collection.JavaConverters._
+import scala.collection.convert.ImplicitConversions.`collection AsScalaIterable`
 import scala.collection.mutable
 
 class VolcanoExecutorPodsAllocator(
-  conf: SparkConf,
-  secMgr: SecurityManager,
-  executorBuilder: KubernetesExecutorBuilder,
-  kubernetesClient: KubernetesClient,
-  snapshotsStore: ExecutorPodsSnapshotsStore,
-  clock: Clock,
-  volcanoOperator: VolcanoOperator,
-  wasSparkSubmittedInClusterMode: Boolean
+    conf: SparkConf,
+    secMgr: SecurityManager,
+    executorBuilder: KubernetesExecutorBuilder,
+    kubernetesClient: KubernetesClient,
+    snapshotsStore: ExecutorPodsSnapshotsStore,
+    clock: Clock,
+    volcanoOperator: VolcanoOperator,
+    clusterMode: Boolean,
+    executorIdsToJobs: mutable.HashMap[Long, Job]
 ) extends ExecutorPodsAllocator(
   conf: SparkConf,
   secMgr: SecurityManager,
@@ -49,14 +51,11 @@ class VolcanoExecutorPodsAllocator(
   snapshotsStore: ExecutorPodsSnapshotsStore,
   clock: Clock
 ) {
-  var executorJob: Job = _
-
-  val lastExpected: AtomicLong = new AtomicLong(0)
 
   override def kubernetesDriverPodName: Option[String] = {
     // For volcano, we need to supply the driver job created in spark-submit machine
     // and propagate to the driver as System property
-    if (wasSparkSubmittedInClusterMode) {
+    if (clusterMode) {
       val prefix = System.getProperty(DRIVER_VOLCANO_JOB_NAME_KEY)
       val podName = s"${prefix}-${SPARK_POD_DRIVER_ROLE}-0"
       Some(podName)
@@ -65,24 +64,13 @@ class VolcanoExecutorPodsAllocator(
     }
   }
 
-  override def createJob(): Unit = {
-
+  private def createJob(executorId: Long, rpId: Int, applicationId: String): Job = {
+    // Create one Volcano Job per executor
     val applicationId = conf.getOption("spark.app.id").getOrElse("spark-application-" + System.currentTimeMillis)
+    val executorConf = KubernetesConf.createExecutorConf(conf, executorId.toString, applicationId, driverPod, rpId)
 
-    val executorConf = KubernetesConf.createExecutorConf(
-      conf,
-      // We get the current value of EXECUTOR_ID_COUNTER without incrementing it, which is 0
-      "1",
-      applicationId,
-      driverPod,
-      DEFAULT_RESOURCE_PROFILE_ID)
-
-    /*
-      todo we first use the default resource profile id. Since we cannot have unique resource profile id's for each pod.
-        We have to use the pod name, instead of the resource profile id for labeling
-    */
     val resolvedExecutorSpec = executorBuilder.buildFromFeatures(executorConf, secMgr,
-      kubernetesClient, rpIdToResourceProfile(DEFAULT_RESOURCE_PROFILE_ID))
+      kubernetesClient, rpIdToResourceProfile(rpId))
     val executorPod = resolvedExecutorSpec.pod
     val podWithAttachedContainer = new PodBuilder(executorPod.pod)
       .editOrNewSpec()
@@ -90,27 +78,31 @@ class VolcanoExecutorPodsAllocator(
       .endSpec()
       .build()
 
-    /* todo I would like to delegate the down and upscaling of the replicas to requestNewExecutors, since we can keep it in one method
-        But we can also use conf.get(EXECUTOR_INSTANCES).getInt
-    */
-    executorJob = volcanoOperator.createExecutors(podWithAttachedContainer, wasSparkSubmittedInClusterMode)
-    logInfo(s"Created executor job ${executorJob.getMetadata.getName} with 0 replicas")
+    // The executor job name is the combination of prefix and executor ID
+    val jobNamePrefix: String = KubernetesClientUtils.getVolcanoExecutorJobNamePrefix(clusterMode)
+    val jobName: String = s"$jobNamePrefix-$executorId"
+    val executorOwner = if (conf.get(KUBERNETES_VOLCANO_ADD_EXECUTOR_OWNER_REFERENCE)) driverPod else None
+    val executorJob: Job = volcanoOperator.createExecutors(
+      jobName, podWithAttachedContainer, applicationId, executorOwner)
+    logInfo(s"Created executor job $jobName")
+    executorJob
   }
 
   override def onNewSnapshots(
       applicationId: String,
       schedulerBackend: KubernetesClusterSchedulerBackend,
       snapshots: Seq[ExecutorPodsSnapshot]): Unit = {
-    logInfo("VolcanoExecutorPodsAllocator.onNewSnapshots called.")
     val k8sKnownExecIds = snapshots.flatMap(_.executorPods.keys)
+    logDebug(s"k8sKnownExecIds: $k8sKnownExecIds, " +
+      s"schedulerKnownNewlyCreatedExecs: ${schedulerKnownNewlyCreatedExecs.keys}")
     newlyCreatedExecutors --= k8sKnownExecIds
     schedulerKnownNewlyCreatedExecs --= k8sKnownExecIds
 
     // transfer the scheduler backend known executor requests from the newlyCreatedExecutors
     // to the schedulerKnownNewlyCreatedExecs
     val schedulerKnownExecs = schedulerBackend.getExecutorIds().map(_.toLong).toSet
-    schedulerKnownNewlyCreatedExecs ++=
-      newlyCreatedExecutors.filterKeys(schedulerKnownExecs.contains).mapValues(_._1)
+    val knownExecIds = newlyCreatedExecutors.filterKeys(schedulerKnownExecs.contains).mapValues(_._1)
+    schedulerKnownNewlyCreatedExecs ++= knownExecIds
     newlyCreatedExecutors --= schedulerKnownNewlyCreatedExecs.keySet
 
     // For all executors we've created against the API but have not seen in a snapshot
@@ -137,15 +129,25 @@ class VolcanoExecutorPodsAllocator(
         " application missed the deletion event.")
 
       newlyCreatedExecutors --= timedOut
+//      if (shouldDeleteExecutors) {
+//        Utils.tryLogNonFatalError {
+//          kubernetesClient
+//            .pods()
+//            .withLabel(SPARK_APP_ID_LABEL, applicationId)
+//            .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
+//            .withLabelIn(SPARK_EXECUTOR_ID_LABEL, timedOut.toSeq.map(_.toString): _*)
+//            .delete()
+//        }
+//      }
+      // volcano equivalent of the above steps - delete volcano jobs for the timed out executors
       if (shouldDeleteExecutors) {
-        Utils.tryLogNonFatalError {
-          kubernetesClient
-            .pods()
-            .withLabel(SPARK_APP_ID_LABEL, applicationId)
-            .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
-            .withLabelIn(SPARK_EXECUTOR_ID_LABEL, timedOut.toSeq.map(_.toString): _*)
-            .delete()
-        }
+        // Select the Jobs for the executor IDs in timedOut
+        val jobsToDelete: List[Job] = executorIdsToJobs
+          .filter{case (id, _) => timedOut.toSet.contains(id)}
+          .values
+          .toList
+        // delete these jobs in one go
+        volcanoOperator.jobClient.delete(jobsToDelete: _*)
       }
     }
 
@@ -209,7 +211,7 @@ class VolcanoExecutorPodsAllocator(
         }
 
       if (podsForRpId.nonEmpty) {
-        logInfo(s"ResourceProfile Id: $rpId " +
+        logDebug(s"ResourceProfile Id: $rpId " +
           s"pod allocation status: $currentRunningCount running, " +
           s"${currentPendingExecutorsForRpId.size} unknown pending, " +
           s"${schedulerKnownPendingExecsForRpId.size} scheduler backend known pending, " +
@@ -243,24 +245,24 @@ class VolcanoExecutorPodsAllocator(
         if (toDelete.nonEmpty) {
           logInfo(s"Deleting ${toDelete.size} excess pod requests (${toDelete.mkString(",")}).")
           _deletedExecutorIds = _deletedExecutorIds ++ toDelete
-
+          // Delete the Volcano Jobs for executor ids in "toDelete" (**not** _deletedExecutorIds)
+          // where the job is in pending state
+          //
+          //           kubernetesClient
+          //              .pods()
+          //              .withField("status.phase", "Pending")
+          //              .withLabel(SPARK_APP_ID_LABEL, applicationId)
+          //              .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
+          //              .withLabelIn(SPARK_EXECUTOR_ID_LABEL, toDelete.sorted.map(_.toString): _*)
+          //              .delete()
           Utils.tryLogNonFatalError {
-            kubernetesClient
-              .pods()
-              .withField("status.phase", "Pending")
-              .withLabel(SPARK_APP_ID_LABEL, applicationId)
-              .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
-              .withLabelIn(SPARK_EXECUTOR_ID_LABEL, toDelete.sorted.map(_.toString): _*)
-              .delete()
+            deleteJobsForPendingExecutorPods(toDelete.toSet)
             newlyCreatedExecutors --= newlyCreatedToDelete
             knownPendingCount -= knownPendingToDelete.size
           }
         }
       }
 
-      // todo: this is easier for us. We can look into the replicas of the Job from Kubernetes
-      logInfo(s"newlyCreatedExecutorsForRpId.isEmpty: ${newlyCreatedExecutorsForRpId.isEmpty}")
-      logInfo(s"knownPodCount: ${knownPodCount}, targetNum: ${targetNum}")
       if (newlyCreatedExecutorsForRpId.isEmpty
         && knownPodCount < targetNum) {
         requestNewExecutors(targetNum, knownPodCount, applicationId, rpId)
@@ -270,14 +272,14 @@ class VolcanoExecutorPodsAllocator(
       // The code below just prints debug messages, which are only useful when there's a change
       // in the snapshot state. Since the messages are a little spammy, avoid them when we know
       // there are no useful updates.
-      if (log.isInfoEnabled() && snapshots.nonEmpty) {
+      if (log.isDebugEnabled() && snapshots.nonEmpty) {
         val outstanding = knownPendingCount + newlyCreatedExecutorsForRpId.size
         if (currentRunningCount >= targetNum && !dynamicAllocationEnabled) {
-          logInfo(s"Current number of running executors for ResourceProfile Id $rpId is " +
+          logDebug(s"Current number of running executors for ResourceProfile Id $rpId is " +
             "equal to the number of requested executors. Not scaling up further.")
         } else {
           if (outstanding > 0) {
-            logInfo(s"Still waiting for $outstanding executors for ResourceProfile " +
+            logDebug(s"Still waiting for $outstanding executors for ResourceProfile " +
               s"Id $rpId before requesting more.")
           }
         }
@@ -289,29 +291,59 @@ class VolcanoExecutorPodsAllocator(
     // Update the flag that helps the setTotalExpectedExecutors() callback avoid triggering this
     // update method when not needed.
     numOutstandingPods.set(totalPendingCount + newlyCreatedExecutors.size)
+  }
 
+  private def deleteJobsForPendingExecutorPods(toDelete: Set[Long]): Unit = {
+    // Delete the executor jobs for the executor ids in toDelete where the executor pod is
+    // in pending state
+
+    // Find the list of all executor pods
+    val allJobNames = executorIdsToJobs.values.map { job => job.getMetadata.getName }.toList
+    val podsToDelete = kubernetesClient
+      .pods()
+      .withField("status.phase", "Pending")
+      .withLabelIn(VOLCANO_JOB_NAME_LABEL_KEY, allJobNames: _*)
+      .list()
+      .getItems
+      .asScala
+
+    // Get the SPARK_EXECUTOR_ID env var from the first container for each pod
+    val pendingExecutorIds = podsToDelete.map {
+      pod =>
+        val envVars = pod.getSpec.getContainers.head.getEnv
+        val executorId = envVars.asScala.filter(env => env.getName.equals(ENV_EXECUTOR_ID)).head.getValue
+        executorId.toLong
+    }.toSet
+
+    // Filter the jobs by executor ID
+    val jobsToDelete = executorIdsToJobs
+      .filter { case (id, _) => toDelete.contains(id) && pendingExecutorIds.contains(id) }
+      .values
+      .toList
+
+    // Delete the jobs in one go
+    jobsToDelete.foreach(
+      job => logInfo(s"Deleting pending executor for Volcano Job: ${job.getMetadata.getName}")
+    )
+    volcanoOperator.jobClient.delete(jobsToDelete: _*)
   }
 
   override def requestNewExecutors(
-      expected: Int,
-      running: Int,
-      applicationId: String,
-      resourceProfileId: Int): Unit = {
+    expected: Int,
+    running: Int,
+    applicationId: String,
+    resourceProfileId: Int): Unit = {
 
-    val executorJobName: String = executorJob.getMetadata.getName
-    logInfo(s"Trying to update the replicas of Executor Job $executorJobName from $running to $expected")
+    for (_ <- running until expected) {
+      // allocate a new executor ID
+      val newExecutorId = EXECUTOR_ID_COUNTER.incrementAndGet()
+      // Create the job for this executor ID
+      val execJob: Job = createJob(newExecutorId, resourceProfileId, applicationId)
+      executorIdsToJobs(newExecutorId) = execJob
 
-    val previousExpected = lastExpected.getAndSet(expected)
-
-    if (previousExpected != expected) {
-      executorJob = volcanoOperator.updateReplicas(executorJob, expected)
-
-      for (_ <- running until expected) {
-        val newExecutorId = EXECUTOR_ID_COUNTER.incrementAndGet()
-        val currentTime = clock.getTimeMillis()
-        logInfo("Adding to newlyCreatedExecutors($newExecutorId) = ($resourceProfileId,  $currentTime)")
-        newlyCreatedExecutors(newExecutorId) = (resourceProfileId, currentTime)
-      }
+      // Update newlyCreatedExecutors - required for executor state management
+      val currentTime = clock.getTimeMillis()
+      newlyCreatedExecutors(newExecutorId) = (resourceProfileId, currentTime)
     }
   }
 }

@@ -514,4 +514,18 @@ object Config extends Logging {
       .version("3.0.0")
       .intConf
       .createWithDefault(3)
+
+  val KUBERNETES_VOLCANO_DELETE_DRIVER: ConfigEntry[Boolean] =
+    ConfigBuilder("spark.kubernetes.volcano.deleteDriverJob")
+      .doc("If set, delete the volcano driver job in cluster mode")
+      .version("3.0.0")
+      .booleanConf
+      .createWithDefault(false)
+
+  val KUBERNETES_VOLCANO_ADD_EXECUTOR_OWNER_REFERENCE: ConfigEntry[Boolean] =
+    ConfigBuilder("spark.kubernetes.volcano.addExecutorOwnerReference")
+      .doc("If set, executor Volcano Jobs are deleted when the driver pod is deleted.")
+      .version("3.0.0")
+      .booleanConf
+      .createWithDefault(true)
 }

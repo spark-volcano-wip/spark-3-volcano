@@ -17,12 +17,10 @@
 package org.apache.spark.scheduler.cluster.k8s
 
 import java.util.Locale
-
 import scala.collection.JavaConverters._
-
 import io.fabric8.kubernetes.api.model.ContainerStateTerminated
 import io.fabric8.kubernetes.api.model.Pod
-
+import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import org.apache.spark.deploy.k8s.Constants._
 import org.apache.spark.internal.Logging
 
@@ -31,13 +29,16 @@ import org.apache.spark.internal.Logging
  */
 private[spark] case class ExecutorPodsSnapshot(
     executorPods: Map[Long, ExecutorPodState],
-    fullSnapshotTs: Long) {
+    fullSnapshotTs: Long,
+    volcanoEnabled: Boolean,
+    executorIdsToJobs: scala.collection.Map[Long, Job]) {
 
   import ExecutorPodsSnapshot._
 
-  def withUpdate(updatedPod: Pod): ExecutorPodsSnapshot = {
-    val newExecutorPods = executorPods ++ toStatesByExecutorId(Seq(updatedPod))
-    new ExecutorPodsSnapshot(newExecutorPods, fullSnapshotTs)
+  def withUpdate(updatedPod: Pod, volcanoEnabled: Boolean,
+                 executorIdsToJobs: scala.collection.Map[Long, Job]): ExecutorPodsSnapshot = {
+    val newExecutorPods = executorPods ++ toStatesByExecutorId(Seq(updatedPod), volcanoEnabled, executorIdsToJobs)
+    new ExecutorPodsSnapshot(newExecutorPods, fullSnapshotTs, volcanoEnabled, executorIdsToJobs)
   }
 }
 
@@ -45,11 +46,21 @@ object ExecutorPodsSnapshot extends Logging {
   private var shouldCheckAllContainers: Boolean = _
   private var sparkContainerName: String = DEFAULT_EXECUTOR_CONTAINER_NAME
 
-  def apply(executorPods: Seq[Pod], fullSnapshotTs: Long): ExecutorPodsSnapshot = {
-    ExecutorPodsSnapshot(toStatesByExecutorId(executorPods), fullSnapshotTs)
+  def apply(executorPods: Seq[Pod], fullSnapshotTs: Long, volcanoEnabled: Boolean,
+            executorIdsToJobs: scala.collection.Map[Long, Job]): ExecutorPodsSnapshot = {
+    ExecutorPodsSnapshot(
+      toStatesByExecutorId(executorPods, volcanoEnabled, executorIdsToJobs),
+      fullSnapshotTs,
+      volcanoEnabled,
+      executorIdsToJobs)
   }
 
-  def apply(): ExecutorPodsSnapshot = ExecutorPodsSnapshot(Map.empty[Long, ExecutorPodState], 0)
+  def apply(): ExecutorPodsSnapshot = ExecutorPodsSnapshot(
+    Map.empty[Long, ExecutorPodState],
+    0,
+    false,
+    Map.empty[Long, Job]
+  )
 
   def setShouldCheckAllContainers(watchAllContainers: Boolean): Unit = {
     shouldCheckAllContainers = watchAllContainers
@@ -59,9 +70,25 @@ object ExecutorPodsSnapshot extends Logging {
     sparkContainerName = containerName
   }
 
-  private def toStatesByExecutorId(executorPods: Seq[Pod]): Map[Long, ExecutorPodState] = {
+  private def toStatesByExecutorId(executorPods: Seq[Pod], volcanoEnabled: Boolean,
+                                   executorIdsToJobs: scala.collection.Map[Long, Job]):
+  Map[Long, ExecutorPodState] = {
+    // Create a Map of the executor job name to the executor id
+    val jobNameToExecutorIds: Map[String, Long] = executorIdsToJobs.map({
+      case (id: Long, job: Job) => job.getMetadata.getName -> id
+    }).toMap
+
     executorPods.map { pod =>
-      (pod.getMetadata.getLabels.get(SPARK_EXECUTOR_ID_LABEL).toLong, toState(pod))
+      val executorID = if(volcanoEnabled) {
+        // If volcano is enabled, we have to resolve the executor ID from the pod name
+        // The pod name has a label that tells us the volcano job name
+        // we use this to look up the corresponding executor ID
+        val jobName: String = pod.getMetadata.getLabels.get(VOLCANO_JOB_NAME_LABEL_KEY)
+        jobNameToExecutorIds(jobName)
+      } else {
+        pod.getMetadata.getLabels.get(SPARK_EXECUTOR_ID_LABEL).toLong
+      }
+      (executorID, toState(pod))
     }.toMap
   }
 
@@ -84,7 +111,7 @@ object ExecutorPodsSnapshot extends Logging {
           } else {
             // Otherwise look for the Spark container and get the exit code if present.
             val sparkContainerExitCode = pod.getStatus.getContainerStatuses.asScala
-              .find(_.getName() == sparkContainerName).flatMap(x => Option(x.getState))
+              .find(_.getName == sparkContainerName).flatMap(x => Option(x.getState))
               .flatMap(x => Option(x.getTerminated)).flatMap(x => Option(x.getExitCode))
               .map(_.toInt)
             sparkContainerExitCode match {
@@ -115,12 +142,12 @@ object ExecutorPodsSnapshot extends Logging {
   }
 
   private def isDeleted(pod: Pod): Boolean = {
-    (pod.getMetadata.getDeletionTimestamp != null &&
+    pod.getMetadata.getDeletionTimestamp != null &&
       (
         pod.getStatus == null ||
         pod.getStatus.getPhase == null ||
           (pod.getStatus.getPhase.toLowerCase(Locale.ROOT) != "terminating" &&
            pod.getStatus.getPhase.toLowerCase(Locale.ROOT) != "running")
-      ))
+      )
   }
 }

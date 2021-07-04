@@ -16,30 +16,44 @@
  */
 package org.apache.spark.scheduler.cluster.k8s
 
-import java.io.Closeable
-
 import io.fabric8.kubernetes.api.model.Pod
-import io.fabric8.kubernetes.client.{KubernetesClient, KubernetesClientException, Watcher}
+import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import io.fabric8.kubernetes.client.Watcher.Action
-
+import io.fabric8.kubernetes.client.{KubernetesClient, KubernetesClientException, Watcher}
 import org.apache.spark.deploy.k8s.Constants._
+import org.apache.spark.deploy.k8s.submit.KubernetesClientUtils
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.Utils
 
+import java.io.Closeable
+
 private[spark] class ExecutorPodsWatchSnapshotSource(
     snapshotsStore: ExecutorPodsSnapshotsStore,
-    kubernetesClient: KubernetesClient) extends Logging {
+    kubernetesClient: KubernetesClient,
+    volcanoEnabled: Boolean,
+    executorIdsToJobs: scala.collection.Map[Long, Job]) extends Logging {
 
   private var watchConnection: Closeable = _
 
   def start(applicationId: String): Unit = {
     require(watchConnection == null, "Cannot start the watcher twice.")
-    logDebug(s"Starting watch for pods with labels $SPARK_APP_ID_LABEL=$applicationId," +
-      s" $SPARK_ROLE_LABEL=$SPARK_POD_EXECUTOR_ROLE.")
-    watchConnection = kubernetesClient.pods()
-      .withLabel(SPARK_APP_ID_LABEL, applicationId)
-      .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
-      .watch(new ExecutorPodsWatcher())
+
+    // If volcano is enabled, we cannot use app id or spark role label to find the executor pods
+    // use the volcano job name labels instead
+    if (volcanoEnabled) {
+      val jobNames: List[String] = KubernetesClientUtils.getVolcanoExecutorJobNames(executorIdsToJobs)
+      watchConnection = kubernetesClient.pods()
+        .withLabelIn(VOLCANO_JOB_NAME_LABEL_KEY, jobNames: _*)
+        .watch(new ExecutorPodsWatcher())
+    } else {
+      logInfo(s"Starting watch for pods with labels $SPARK_APP_ID_LABEL=$applicationId," +
+        s" $SPARK_ROLE_LABEL=$SPARK_POD_EXECUTOR_ROLE.")
+
+      watchConnection = kubernetesClient.pods()
+        .withLabel(SPARK_APP_ID_LABEL, applicationId)
+        .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
+        .watch(new ExecutorPodsWatcher())
+    }
   }
 
   def stop(): Unit = {

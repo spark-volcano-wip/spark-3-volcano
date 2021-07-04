@@ -59,8 +59,6 @@ object Constants {
   val ENV_APPLICATION_ID = "SPARK_APPLICATION_ID"
   val ENV_EXECUTOR_ID = "SPARK_EXECUTOR_ID"
   val ENV_EXECUTOR_POD_IP = "SPARK_EXECUTOR_POD_IP"
-  val ENV_EXECUTOR_POD_NAME = "SPARK_EXECUTOR_POD_NAME"
-  val ENV_EXECUTOR_VOLCANO_ENABLED = "SPARK_EXECUTOR_VOLCANO_ENABLED"
   val ENV_JAVA_OPT_PREFIX = "SPARK_JAVA_OPT_"
   val ENV_CLASSPATH = "SPARK_CLASSPATH"
   val ENV_DRIVER_BIND_ADDRESS = "SPARK_DRIVER_BIND_ADDRESS"
@@ -124,5 +122,9 @@ object Constants {
   // filtered out in the driver
   // see https://github.com/apache/spark/blob/0494dc90af48ce7da0625485a4dc6917a244d580/core/src/main/scala/org/apache/spark/deploy/SparkSubmitArguments.scala
   val DRIVER_VOLCANO_JOB_NAME_KEY = "spark.volcano.driver.job.name"
-  val EXECUTOR_VOLCANO_JOB_NAME_KEY = "spark.volcano.executor.job.name"
+  val EXECUTOR_VOLCANO_JOB_PREFIX_KEY = "spark.volcano.executor.job.prefix"
+
+  // Volcano Job Name label key
+  val VOLCANO_JOB_NAME_LABEL_KEY = "volcano.sh/job-name"
+
 }

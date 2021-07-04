@@ -45,8 +45,6 @@ private[spark] class ExecutorPodsAllocator(
 
   val EXECUTOR_ID_COUNTER = new AtomicLong(0L)
 
-  def createJob(): Unit = {}
-
   // ResourceProfile id -> total expected executors per profile, currently we don't remove
   // any resource profiles - https://issues.apache.org/jira/browse/SPARK-30749
   val totalExpectedExecutorsPerResourceProfileId = new ConcurrentHashMap[Int, Int]()

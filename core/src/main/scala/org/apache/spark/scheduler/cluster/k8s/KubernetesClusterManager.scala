@@ -17,6 +17,7 @@
 package org.apache.spark.scheduler.cluster.k8s
 
 import com.google.common.cache.CacheBuilder
+import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import io.fabric8.kubernetes.client.Config
 import org.apache.spark.SparkContext
 import org.apache.spark.deploy.k8s.Config._
@@ -30,8 +31,16 @@ import org.apache.spark.volcano.scheduler.VolcanoExecutorPodsAllocator
 
 import java.io.File
 import java.util.concurrent.TimeUnit
+import scala.collection.mutable
 
 private[spark] class KubernetesClusterManager extends ExternalClusterManager with Logging {
+
+  // Key-executor id, Value - the Volcano Job for that executor
+  // Future improvements: make this a ConcurrentHashmap
+  // delete the entry when executors are deleted - See KubernetesClusterSchedulerBackend.stop
+  // and KubernetesClusterSchedulerBackend.doKillExecutors
+  // Also the value can be just the job name and not the entire job (which will save some memory)
+  val executorIdsToJobs: mutable.HashMap[Long, Job] = mutable.HashMap.empty[Long, Job]
 
   override def canCreate(masterURL: String): Boolean = masterURL.startsWith("k8s")
 
@@ -96,7 +105,6 @@ private[spark] class KubernetesClusterManager extends ExternalClusterManager wit
     val schedulerExecutorService = ThreadUtils.newDaemonSingleThreadScheduledExecutor(
       "kubernetes-executor-maintenance")
 
-
     ExecutorPodsSnapshot.setShouldCheckAllContainers(
       sc.conf.get(KUBERNETES_EXECUTOR_CHECK_ALL_CONTAINERS))
     val sparkContainerName = sc.conf.get(KUBERNETES_EXECUTOR_PODTEMPLATE_CONTAINER_NAME)
@@ -105,15 +113,19 @@ private[spark] class KubernetesClusterManager extends ExternalClusterManager wit
     val subscribersExecutor = ThreadUtils
       .newDaemonThreadPoolScheduledExecutor(
         "kubernetes-executor-snapshots-subscribers", 2)
-    val snapshotsStore = new ExecutorPodsSnapshotsStoreImpl(subscribersExecutor)
+    val volcanoEnabled: Boolean = sc.conf.get(KUBERNETES_VOLCANO_ENABLED)
+    val snapshotsStore = new ExecutorPodsSnapshotsStoreImpl(
+      subscribersExecutor,
+      volcanoEnabled = volcanoEnabled,
+      executorIdsToJobs = executorIdsToJobs)
 
     val removedExecutorsCache = CacheBuilder.newBuilder()
       .expireAfterWrite(3, TimeUnit.MINUTES)
       .build[java.lang.Long, java.lang.Long]()
 
+    val volcanoOperator: VolcanoOperator = new VolcanoOperator(kubernetesClient, sc.conf)
     val executorPodsAllocator: ExecutorPodsAllocator = {
-      if (sc.conf.get(KUBERNETES_VOLCANO_ENABLED)) {
-        val volcanoOperator: VolcanoOperator = new VolcanoOperator(kubernetesClient, sc.conf)
+      if (volcanoEnabled) {
         new VolcanoExecutorPodsAllocator(
           sc.conf,
           sc.env.securityManager,
@@ -122,7 +134,8 @@ private[spark] class KubernetesClusterManager extends ExternalClusterManager wit
           snapshotsStore,
           new SystemClock(),
           volcanoOperator,
-          wasSparkSubmittedInClusterMode
+          wasSparkSubmittedInClusterMode,
+          executorIdsToJobs
         )
       } else {
         new ExecutorPodsAllocator(
@@ -145,14 +158,16 @@ private[spark] class KubernetesClusterManager extends ExternalClusterManager wit
 
     val podsWatchEventSource = new ExecutorPodsWatchSnapshotSource(
       snapshotsStore,
-      kubernetesClient)
+      kubernetesClient,
+      volcanoEnabled,
+      executorIdsToJobs
+    )
 
     val eventsPollingExecutor = ThreadUtils.newDaemonSingleThreadScheduledExecutor(
       "kubernetes-executor-pod-polling-sync")
     val podsPollingEventSource = new ExecutorPodsPollingSnapshotSource(
-      sc.conf, kubernetesClient, snapshotsStore, eventsPollingExecutor)
+      sc.conf, kubernetesClient, snapshotsStore, eventsPollingExecutor, executorIdsToJobs)
 
-    // Only start the VolcanoClusterSchedulerBackend if the job is created!
     new KubernetesClusterSchedulerBackend(
       scheduler.asInstanceOf[TaskSchedulerImpl],
       sc,
@@ -162,7 +177,9 @@ private[spark] class KubernetesClusterManager extends ExternalClusterManager wit
       executorPodsAllocator,
       executorPodsLifecycleEventHandler,
       podsWatchEventSource,
-      podsPollingEventSource
+      podsPollingEventSource,
+      executorIdsToJobs,
+      volcanoOperator
     )
   }
 

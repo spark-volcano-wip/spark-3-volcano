@@ -16,22 +16,25 @@
  */
 package org.apache.spark.scheduler.cluster.k8s
 
-import java.util.concurrent.{Future, ScheduledExecutorService, TimeUnit}
-
+import io.fabric8.kubernetes.api.model.Pod
+import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import io.fabric8.kubernetes.client.KubernetesClient
-import scala.collection.JavaConverters._
-
 import org.apache.spark.SparkConf
 import org.apache.spark.deploy.k8s.Config._
 import org.apache.spark.deploy.k8s.Constants._
+import org.apache.spark.deploy.k8s.submit.KubernetesClientUtils
 import org.apache.spark.internal.Logging
 import org.apache.spark.util.{ThreadUtils, Utils}
+
+import java.util.concurrent.{Future, ScheduledExecutorService, TimeUnit}
+import scala.collection.JavaConverters._
 
 private[spark] class ExecutorPodsPollingSnapshotSource(
     conf: SparkConf,
     kubernetesClient: KubernetesClient,
     snapshotsStore: ExecutorPodsSnapshotsStore,
-    pollingExecutor: ScheduledExecutorService) extends Logging {
+    pollingExecutor: ScheduledExecutorService,
+    executorIdsToJobs: scala.collection.Map[Long, Job]) extends Logging {
 
   private val pollingInterval = conf.get(KUBERNETES_EXECUTOR_API_POLLING_INTERVAL)
 
@@ -55,15 +58,26 @@ private[spark] class ExecutorPodsPollingSnapshotSource(
   private class PollRunnable(applicationId: String) extends Runnable {
     override def run(): Unit = Utils.tryLogNonFatalError {
       logDebug(s"Resynchronizing full executor pod state from Kubernetes.")
-      snapshotsStore.replaceSnapshot(kubernetesClient
-        .pods()
-        .withLabel(SPARK_APP_ID_LABEL, applicationId)
-        .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
-        .withoutLabel(SPARK_EXECUTOR_INACTIVE_LABEL, "true")
-        .list()
-        .getItems
-        .asScala.toSeq)
+      val volcanoEnabled: Boolean = conf.get(KUBERNETES_VOLCANO_ENABLED)
+
+      val executorPods: Seq[Pod] = if(volcanoEnabled) {
+        val jobNames: List[String] = KubernetesClientUtils.getVolcanoExecutorJobNames(executorIdsToJobs)
+        kubernetesClient.pods()
+          .withLabelIn(VOLCANO_JOB_NAME_LABEL_KEY, jobNames: _*)
+          .withoutLabel(SPARK_EXECUTOR_INACTIVE_LABEL, "true")
+          .list()
+          .getItems
+          .asScala
+      } else {
+        kubernetesClient.pods()
+          .withLabel(SPARK_APP_ID_LABEL, applicationId)
+          .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
+          .withoutLabel(SPARK_EXECUTOR_INACTIVE_LABEL, "true")
+          .list()
+          .getItems
+          .asScala
+      }
+      snapshotsStore.replaceSnapshot(executorPods)
     }
   }
-
 }

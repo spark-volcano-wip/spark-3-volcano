@@ -53,7 +53,7 @@ class DeterministicExecutorPodsSnapshotsStore extends ExecutorPodsSnapshotsStore
   }
 
   override def replaceSnapshot(newSnapshot: Seq[Pod]): Unit = {
-    currentSnapshot = ExecutorPodsSnapshot(newSnapshot, clock.getTimeMillis())
+    currentSnapshot = ExecutorPodsSnapshot(newSnapshot, clock.getTimeMillis(), volcanoEnabled)
     snapshotsBuffer += currentSnapshot
   }
 

@@ -16,6 +16,7 @@
  */
 package org.apache.spark.scheduler.cluster.k8s
 
+import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import io.fabric8.kubernetes.client.KubernetesClient
 import org.apache.spark.SparkContext
 import org.apache.spark.deploy.k8s.Config._
@@ -29,23 +30,26 @@ import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.RegisterE
 import org.apache.spark.scheduler.cluster.{CoarseGrainedSchedulerBackend, SchedulerBackendUtils}
 import org.apache.spark.scheduler.{ExecutorKilled, ExecutorLossReason, TaskSchedulerImpl}
 import org.apache.spark.util.{ThreadUtils, Utils}
+import org.apache.spark.volcano.VolcanoOperator
 
 import java.util.concurrent.{ScheduledExecutorService, TimeUnit}
 import scala.concurrent.Future
 
 class KubernetesClusterSchedulerBackend(
-    scheduler: TaskSchedulerImpl,
-    sc: SparkContext,
-    kubernetesClient: KubernetesClient,
-    executorService: ScheduledExecutorService,
-    snapshotsStore: ExecutorPodsSnapshotsStore,
-    podAllocator: ExecutorPodsAllocator,
-    lifecycleEventHandler: ExecutorPodsLifecycleManager,
-    watchEvents: ExecutorPodsWatchSnapshotSource,
-    pollEvents: ExecutorPodsPollingSnapshotSource)
+                                         scheduler: TaskSchedulerImpl,
+                                         sc: SparkContext,
+                                         kubernetesClient: KubernetesClient,
+                                         executorService: ScheduledExecutorService,
+                                         snapshotsStore: ExecutorPodsSnapshotsStore,
+                                         podAllocator: ExecutorPodsAllocator,
+                                         lifecycleEventHandler: ExecutorPodsLifecycleManager,
+                                         watchEvents: ExecutorPodsWatchSnapshotSource,
+                                         pollEvents: ExecutorPodsPollingSnapshotSource,
+                                         executorIdsToJobs: scala.collection.Map[Long, Job],
+                                         volcanoOperator: VolcanoOperator)
     extends CoarseGrainedSchedulerBackend(scheduler, sc.env.rpcEnv) {
 
-  protected override val minRegisteredRatio =
+  protected override val minRegisteredRatio: Double =
     if (conf.get(SCHEDULER_MIN_REGISTERED_RESOURCES_RATIO).isEmpty) {
       0.8
     } else {
@@ -83,7 +87,7 @@ class KubernetesClusterSchedulerBackend(
    * @return The application ID
    */
   override def applicationId(): String = {
-    conf.getOption("spark.app.id").map(_.toString).getOrElse(super.applicationId)
+    conf.getOption("spark.app.id").getOrElse(super.applicationId)
   }
 
   override def start(): Unit = {
@@ -91,9 +95,6 @@ class KubernetesClusterSchedulerBackend(
     val initExecs = Map(defaultProfile -> initialExecutors)
 
     podAllocator.setTotalExpectedExecutors(initExecs)
-    // todo create job should not exist here. You should overwrite the KubernetesClusterSChedulerBackend with the Volcano one
-   podAllocator.createJob()
-
     lifecycleEventHandler.start(this)
     podAllocator.start(applicationId(), this)
     watchEvents.start(applicationId())
@@ -121,12 +122,22 @@ class KubernetesClusterSchedulerBackend(
     }
 
     if (shouldDeleteExecutors) {
+      val volcanoEnabled: Boolean = conf.get(KUBERNETES_VOLCANO_ENABLED)
       Utils.tryLogNonFatalError {
-        kubernetesClient
-          .pods()
-          .withLabel(SPARK_APP_ID_LABEL, applicationId())
-          .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
-          .delete()
+        if (volcanoEnabled) {
+          // Delete the Volcano Jobs created throughout the lifecycle of the Driver
+          executorIdsToJobs.values.foreach {
+            job: Job =>
+              logInfo(s"Deleting Executor Job: ${job.getMetadata.getName}")
+          }
+          volcanoOperator.jobClient.delete(executorIdsToJobs.values.toList: _*)
+        } else {
+          kubernetesClient
+            .pods()
+            .withLabel(SPARK_APP_ID_LABEL, applicationId())
+            .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
+            .delete()
+        }
       }
       Utils.tryLogNonFatalError {
         kubernetesClient
@@ -171,17 +182,31 @@ class KubernetesClusterSchedulerBackend(
     // by the ExecutorPodsLifecycleManager) will respect that configuration.
     val killTask = new Runnable() {
       override def run(): Unit = Utils.tryLogNonFatalError {
-        val running = kubernetesClient
-          .pods()
-          .withField("status.phase", "Running")
-          .withLabel(SPARK_APP_ID_LABEL, applicationId())
-          .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
-          .withLabelIn(SPARK_EXECUTOR_ID_LABEL, executorIds: _*)
+        val volcanoEnabled: Boolean = conf.get(KUBERNETES_VOLCANO_ENABLED)
+        if (volcanoEnabled) {
+          // Find the job names for each executor ID to delete
+          val idSet: Set[Long] = executorIds.map(_.toLong).toSet
+          val jobsToDelete: List[Job] = executorIdsToJobs.filter {
+            case (id, _) => idSet.contains(id)
+          }.values.toList
+          // delete these jobs
+          jobsToDelete.foreach { job: Job =>
+            logInfo(s"Deleting Executor Job: ${job.getMetadata.getName}")
+          }
+          volcanoOperator.jobClient.delete(jobsToDelete: _*)
+        } else {
+          val running = kubernetesClient
+            .pods()
+            .withField("status.phase", "Running")
+            .withLabel(SPARK_APP_ID_LABEL, applicationId())
+            .withLabel(SPARK_ROLE_LABEL, SPARK_POD_EXECUTOR_ROLE)
+            .withLabelIn(SPARK_EXECUTOR_ID_LABEL, executorIds: _*)
 
-        if (!running.list().getItems().isEmpty()) {
-          logInfo(s"Forcefully deleting ${running.list().getItems().size()} pods " +
-            s"(out of ${executorIds.size}) that are still running after graceful shutdown period.")
-          running.delete()
+          if (!running.list.getItems.isEmpty) {
+            logInfo(s"Forcefully deleting ${running.list.getItems.size} pods " +
+              s"(out of ${executorIds.size}) that are still running after graceful shutdown period.")
+            running.delete()
+          }
         }
       }
     }
@@ -232,5 +257,4 @@ class KubernetesClusterSchedulerBackend(
       addressToExecutorId.get(rpcAddress).foreach(disableExecutor)
     }
   }
-
 }

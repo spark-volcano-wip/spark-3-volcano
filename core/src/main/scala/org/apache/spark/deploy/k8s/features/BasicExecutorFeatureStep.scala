@@ -135,20 +135,7 @@ private[spark] class BasicExecutorFeatureStep(
           .withNewFieldRef("v1", "status.podIP")
           .build())
 
-      // This is used to find out the executor id from the pod name
-      val podName: EnvVarBuilder = new EnvVarBuilder()
-        .withName(ENV_EXECUTOR_POD_NAME)
-          .withValueFrom(new EnvVarSourceBuilder()
-            .withNewFieldRef("v1", "metadata.name")
-            .build())
-
-      // This is required to trigger the executor id replacement when volcano is enabled
-      val isVolcanoEnabled: EnvVar = new EnvVarBuilder()
-        .withName(ENV_EXECUTOR_VOLCANO_ENABLED)
-        .withValue(kubernetesConf.sparkConf.get(KUBERNETES_VOLCANO_ENABLED).toString)
-          .build()
-
-      Seq(podIP.build(), podName.build(), isVolcanoEnabled)
+      Seq(podIP.build())
       } ++ {
         if (kubernetesConf.get(AUTH_SECRET_FILE_EXECUTOR).isEmpty) {
           Option(secMgr.getSecretKey()).map { authSecret =>

@@ -4,11 +4,12 @@ import io.fabric8.kubernetes.api.model._
 import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import io.fabric8.kubernetes.client.Watcher.Action
 import io.fabric8.kubernetes.client.{KubernetesClient, Watch}
+import org.apache.spark.deploy.k8s.Config.KUBERNETES_VOLCANO_DELETE_DRIVER
 import org.apache.spark.deploy.k8s.Constants.{ENV_SPARK_CONF_DIR, SPARK_CONF_DIR_INTERNAL, SPARK_CONF_VOLUME_DRIVER}
+import org.apache.spark.deploy.k8s.KubernetesDriverConf
 import org.apache.spark.deploy.k8s.submit.{AbstractClient, KubernetesClientUtils, KubernetesDriverBuilder}
-import org.apache.spark.deploy.k8s.{Constants, KubernetesDriverConf}
+import org.apache.spark.util.Utils
 import org.apache.spark.volcano.VolcanoOperator
-import org.apache.spark.volcano.dsl.VolcanoJobOperationsImpl
 
 import java.util.Collections
 import scala.collection.JavaConverters._
@@ -90,28 +91,15 @@ class VolcanoClient(
         // Break the while loop if the pod is completed or we don't want to wait
         if(watcher.watchOrStop(sId)) {
           watch.close()
-          if (currentJob != null) {
-            // logInfo("Deleting driver and executor jobs...")
-            // deleteJobs(currentJob.get, jobClient)
+          if (currentJob != null && conf.sparkConf.get(KUBERNETES_VOLCANO_DELETE_DRIVER)) {
+            logInfo(s"Deleting driver job ${driverJob.getMetadata.getName} ")
+            Utils.tryLogNonFatalError {
+              volcanoOperator.jobClient.delete(driverJob)
+            }
           }
           break
         }
       }
-    }
-  }
-
-  private def deleteJobs(driverJob: Job, jobClient: VolcanoJobOperationsImpl) = {
-    jobClient.delete(driverJob)
-
-    val executorJobName: String = driverJob.getMetadata.getName.replace(
-      Constants.SPARK_POD_DRIVER_ROLE, Constants.SPARK_POD_EXECUTOR_ROLE)
-
-    val executorJob: Option[Job] = jobClient.list().getItems.asScala.find(
-      job => job.getMetadata.getName.equals(executorJobName)
-    )
-
-    if (executorJob.isDefined) {
-      jobClient.delete(executorJob.get)
     }
   }
 

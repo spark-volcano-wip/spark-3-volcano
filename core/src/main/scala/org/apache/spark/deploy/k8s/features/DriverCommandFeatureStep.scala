@@ -65,7 +65,7 @@ private[spark] class DriverCommandFeatureStep(conf: KubernetesDriverConf)
       Map(
         APP_RESOURCE_TYPE.key -> appType,
         DRIVER_VOLCANO_JOB_NAME_KEY -> KubernetesClientUtils.DRIVER_VOLCANO_JOB_NAME,
-        EXECUTOR_VOLCANO_JOB_NAME_KEY -> KubernetesClientUtils.EXECUTOR_VOLCANO_JOB_NAME
+        EXECUTOR_VOLCANO_JOB_PREFIX_KEY -> KubernetesClientUtils.EXECUTOR_VOLCANO_JOB_NAME_PREFIX
       )
     } else {
       Map(APP_RESOURCE_TYPE.key -> appType)

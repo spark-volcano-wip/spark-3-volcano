@@ -17,6 +17,7 @@
 
 package org.apache.spark.deploy.k8s.submit
 
+import io.fabric8.kubernetes.api.model.volcano.batch.Job
 import io.fabric8.kubernetes.api.model.{ConfigMap, ConfigMapBuilder, KeyToPath}
 import org.apache.spark.SparkConf
 import org.apache.spark.deploy.k8s.Constants.ENV_SPARK_CONF_DIR
@@ -41,8 +42,8 @@ object KubernetesClientUtils extends Logging {
 
   private val VOLCANO_JOB_ID: String = KubernetesUtils.uniqueID()
 
-  val DRIVER_VOLCANO_JOB_NAME: String = s"spark-drv-${VOLCANO_JOB_ID}"
-  val EXECUTOR_VOLCANO_JOB_NAME: String = s"spark-exc-${VOLCANO_JOB_ID}"
+  val DRIVER_VOLCANO_JOB_NAME: String = s"s-drv-${VOLCANO_JOB_ID}"
+  val EXECUTOR_VOLCANO_JOB_NAME_PREFIX: String = s"s-exc-${VOLCANO_JOB_ID}"
 
   private def buildStringFromPropertiesMap(configMapName: String,
       propertiesMap: Map[String, String]): String = {
@@ -172,5 +173,21 @@ object KubernetesClientUtils extends Logging {
       }
     }
     confFiles
+  }
+
+  def getVolcanoExecutorJobNamePrefix(clusterMode: Boolean): String = {
+    // If spark-submit was configured to use cluster mode, then use the job name prefix in sync
+    // with the driver job for volcano
+    // in client mode we don't create a driver job, so create a new prefix
+    if (clusterMode) {
+      System.getProperty(Constants.EXECUTOR_VOLCANO_JOB_PREFIX_KEY)
+    }
+    else {
+      KubernetesClientUtils.EXECUTOR_VOLCANO_JOB_NAME_PREFIX
+    }
+  }
+
+  def getVolcanoExecutorJobNames(executorIdsToJobs: scala.collection.Map[Long, Job]): List[String] = {
+    executorIdsToJobs.values.map(job => job.getMetadata.getName).toList
   }
 }

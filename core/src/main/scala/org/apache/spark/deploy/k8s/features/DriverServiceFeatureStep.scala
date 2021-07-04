@@ -68,7 +68,7 @@ private[spark] class DriverServiceFeatureStep(
   override def getAdditionalKubernetesResources(): Seq[HasMetadata] = {
     val k8sPodLabels = kubernetesConf.labels.asJava
     val volcanoPodLabels = Map(
-      "volcano.sh/job-name" -> KubernetesClientUtils.DRIVER_VOLCANO_JOB_NAME,
+      VOLCANO_JOB_NAME_LABEL_KEY -> KubernetesClientUtils.DRIVER_VOLCANO_JOB_NAME,
     ).asJava
 
     // For volcano, pod labels are stripped out so the pod label must be a volcano specific one
